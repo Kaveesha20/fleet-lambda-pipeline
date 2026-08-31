@@ -1,0 +1,30 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Data generated at runtime (not part of the codebase)
+data/raw/expenses/*.csv
+data/dlq/*
+
+# Spark
+spark/checkpoints/
+*.crc
+
+# Docker / OS
+.DS_Store
+Thumbs.db
+
+# Airflow runtime artifacts (if ever run outside Docker)
+airflow/logs/
+airflow/airflow.db
+airflow/webserver_config.py
+
+# IDE
+.vscode/
+.idea/
+
+Outputs/
+Outputs.zip

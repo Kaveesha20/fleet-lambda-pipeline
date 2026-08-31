@@ -1,0 +1,152 @@
+version: "3.8"
+
+# Full pipeline compose: Kafka (ingestion), Postgres (serving/storage),
+# Spark (speed layer - Structured Streaming). Airflow is added in Step 4.
+
+services:
+  kafka:
+    image: apache/kafka:latest
+    container_name: fleet-kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,PLAINTEXT_HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "fleet-mini-project-cluster"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - fleet-net
+
+  kafka-init-topics:
+    image: apache/kafka:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "/opt/kafka/bin/kafka-topics.sh --create --if-not-exists
+      --bootstrap-server kafka:9092
+      --topic vehicle_telemetry --partitions 3 --replication-factor 1"
+    networks:
+      - fleet-net
+
+  postgres:
+    image: postgres:16
+    container_name: fleet-postgres
+    environment:
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet_pw
+      POSTGRES_DB: fleet_db
+    ports:
+      - "5433:5432"   # host port 5433 to avoid clashing with any local Postgres
+    volumes:
+      - fleet-postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d fleet_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - fleet-net
+
+  spark-streaming:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: fleet-spark-streaming
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TELEMETRY_TOPIC: vehicle_telemetry
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fleet_db
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet_pw
+      WINDOW_DURATION: "1 minute"
+      WATERMARK_DELAY: "2 minutes"
+    volumes:
+      - ./spark/checkpoints:/tmp/spark-checkpoints
+      - ./observability/logs:/var/log/fleet
+    networks:
+      - fleet-net
+
+  airflow:
+    image: apache/airflow:2.9.3-python3.11
+    container_name: fleet-airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fleet:fleet_pw@postgres:5432/fleet_db
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      # App tables (live_fleet_utilization etc.) live in the same fleet_db;
+      # Airflow's own metadata tables (dag_run, task_instance, ...) are
+      # created by `airflow db migrate` in a separate schema namespace and
+      # do not collide with the app tables from postgres/init.sql.
+      FLEET_POSTGRES_HOST: postgres
+      FLEET_POSTGRES_PORT: "5432"
+      FLEET_POSTGRES_DB: fleet_db
+      FLEET_POSTGRES_USER: fleet
+      FLEET_POSTGRES_PASSWORD: fleet_pw
+      FLEET_EXPENSE_DIR: /opt/airflow/data/raw/expenses
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+      # Dev-only mechanism (official image entrypoint feature) to install
+      # extra Python deps at container start without building a custom image.
+      _PIP_ADDITIONAL_REQUIREMENTS: "psycopg2-binary==2.9.9"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./data:/opt/airflow/data
+      - fleet-airflow-data:/opt/airflow
+    ports:
+      - "8082:8080"   # host 8082 -- 8081 is taken by your existing local Airflow stack
+    command: airflow standalone
+    networks:
+      - fleet-net
+
+  serving-api:
+    build:
+      context: ./serving
+      dockerfile: Dockerfile
+    container_name: fleet-serving-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: fleet_db
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet_pw
+    ports:
+      - "8000:8000"
+    networks:
+      - fleet-net
+
+networks:
+  fleet-net:
+    driver: bridge
+
+volumes:
+  fleet-postgres-data:
+  fleet-airflow-data:

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fleet Operations Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171d2e;
+    --panel-border: #262e45;
+    --text: #e6e9f2;
+    --muted: #8b93ab;
+    --accent: #4f8cff;
+    --good: #33c17a;
+    --warn: #f0b429;
+    --bad: #ef5354;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .zone-name { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+  .stat-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: var(--muted); }
+  .stat-row b { color: var(--text); font-weight: 600; }
+  .health-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .dot-ok { background: var(--good); }
+  .dot-warn { background: var(--warn); }
+  .dot-bad { background: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--panel-border); }
+  th { color: var(--muted); font-weight: 500; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+  .profit-pos { color: var(--good); }
+  .profit-neg { color: var(--bad); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .badge-bad { background: rgba(239,83,84,0.15); color: var(--bad); }
+  .badge-ok { background: rgba(51,193,122,0.15); color: var(--good); }
+  .section-title { font-size: 16px; font-weight: 600; margin: 32px 0 12px; }
+  .alert-row { font-size: 13px; padding: 8px 0; border-bottom: 1px solid var(--panel-border); }
+  .alert-sev { font-size: 10px; text-transform: uppercase; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 8px; }
+  .sev-WARNING { background: rgba(240,180,41,0.15); color: var(--warn); }
+  .sev-ERROR { background: rgba(239,83,84,0.15); color: var(--bad); }
+  .timestamp { color: var(--muted); font-size: 11px; }
+  #last-updated { color: var(--muted); font-size: 12px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+  <h1>🚕 Fleet Operations Dashboard</h1>
+  <div class="subtitle">Ride-Hailing Fleet Operations — Lambda architecture (Kafka → Spark speed layer / Airflow batch layer → Postgres)</div>
+  <div id="last-updated">Loading...</div>
+
+  <div class="section-title">Pipeline Health</div>
+  <div class="grid" id="health-grid"></div>
+
+  <div class="section-title">Live Utilization by Zone <span class="timestamp">(last 10 min)</span></div>
+  <div class="grid" id="zone-grid"></div>
+
+  <div class="section-title">Recent Alerts</div>
+  <div class="panel" id="alerts-panel"><div class="timestamp">Loading alerts...</div></div>
+
+  <div class="section-title">Daily Vehicle Profitability Reconciliation</div>
+  <div class="panel" id="reconciliation-panel"><div class="timestamp">Loading reconciliation data...</div></div>
+
+<script>
+const API = "";
+
+function fmt(n, digits=1) {
+  if (n === null || n === undefined) return "—";
+  return Number(n).toFixed(digits);
+}
+function pct(n) {
+  if (n === null || n === undefined) return "—";
+  return (Number(n) * 100).toFixed(0) + "%";
+}
+function timeAgo(iso) {
+  if (!iso) return "never";
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return Math.round(diff) + "s ago";
+  if (diff < 3600) return Math.round(diff / 60) + "m ago";
+  return Math.round(diff / 3600) + "h ago";
+}
+
+async function loadHealth() {
+  const res = await fetch(`${API}/api/health`);
+  const data = await res.json();
+  const grid = document.getElementById("health-grid");
+  grid.innerHTML = "";
+  data.components.forEach(c => {
+    const dotClass = c.status === "OK" || c.status === "HEALTHY" ? "dot-ok"
+                    : c.status === "STALE" || c.status === "WARN" ? "dot-warn" : "dot-bad";
+    const div = document.createElement("div");
+    div.className = "panel";
+    div.innerHTML = `
+      <h2>${c.component}</h2>
+      <div class="zone-name"><span class="health-dot ${dotClass}"></span>${c.status}</div>
+      <div class="stat-row"><span>Last heartbeat</span><b>${timeAgo(c.last_heartbeat)}</b></div>
+      <div class="stat-row"><span>Detail</span><b style="font-weight:400;font-size:11px;color:var(--muted)">${c.detail || "—"}</b></div>
+    `;
+    grid.appendChild(div);
+  });
+  if (data.components.length === 0) {
+    grid.innerHTML = `<div class="panel timestamp">No heartbeats recorded yet.</div>`;
+  }
+}
+
+async function loadZones() {
+  const res = await fetch(`${API}/api/utilization/by-zone?minutes=10`);
+  const data = await res.json();
+  const grid = document.getElementById("zone-grid");
+  grid.innerHTML = "";
+  if (data.zones.length === 0) {
+    grid.innerHTML = `<div class="panel timestamp">No utilization data yet — is the pipeline running?</div>`;
+    return;
+  }
+  data.zones.forEach(z => {
+    const div = document.createElement("div");
+    div.className = "panel";
+    div.innerHTML = `
+      <div class="zone-name">${z.zone}</div>
+      <div class="stat-row"><span>Avg active vehicles</span><b>${fmt(z.avg_active_vehicles, 1)}</b></div>
+      <div class="stat-row"><span>Idle ratio</span><b>${pct(z.avg_idle_ratio)}</b></div>
+      <div class="stat-row"><span>Total earnings</span><b>$${fmt(z.total_earnings, 2)}</b></div>
+      <div class="stat-row"><span>Trips</span><b>${z.total_trips || 0}</b></div>
+      <div class="stat-row"><span>Avg speed</span><b>${fmt(z.avg_speed, 1)} km/h</b></div>
+    `;
+    grid.appendChild(div);
+  });
+}
+
+async function loadAlerts() {
+  const res = await fetch(`${API}/api/alerts?limit=15`);
+  const data = await res.json();
+  const panel = document.getElementById("alerts-panel");
+  if (data.alerts.length === 0) {
+    panel.innerHTML = `<div class="timestamp">No alerts.</div>`;
+    return;
+  }
+  panel.innerHTML = data.alerts.map(a => `
+    <div class="alert-row">
+      <span class="alert-sev sev-${a.severity}">${a.severity}</span>
+      ${a.message}
+      <span class="timestamp"> — ${timeAgo(a.triggered_at)}</span>
+    </div>
+  `).join("");
+}
+
+async function loadReconciliation() {
+  const res = await fetch(`${API}/api/reconciliation/daily`);
+  const panel = document.getElementById("reconciliation-panel");
+  if (res.status === 404) {
+    panel.innerHTML = `<div class="timestamp">No reconciliation data yet — run the Airflow DAG first.</div>`;
+    return;
+  }
+  const data = await res.json();
+  const rows = data.vehicles.map(v => `
+    <tr>
+      <td>${v.vehicle_id}</td>
+      <td>${v.trip_count}</td>
+      <td>$${fmt(v.total_earnings, 2)}</td>
+      <td>$${fmt(v.fuel_cost, 2)}</td>
+      <td>$${fmt(v.maintenance_cost, 2)}</td>
+      <td class="${v.net_profit >= 0 ? 'profit-pos' : 'profit-neg'}">$${fmt(v.net_profit, 2)}</td>
+      <td>${v.is_unprofitable ? '<span class="badge badge-bad">Unprofitable</span>' : '<span class="badge badge-ok">OK</span>'}</td>
+    </tr>
+  `).join("");
+  panel.innerHTML = `
+    <div class="timestamp" style="margin-bottom:10px;">Date: ${data.sim_date} — ${data.unprofitable_count} of ${data.vehicle_count} vehicles unprofitable</div>
+    <table>
+      <thead><tr><th>Vehicle</th><th>Trips</th><th>Earnings</th><th>Fuel</th><th>Maintenance</th><th>Net Profit</th><th>Status</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function refreshAll() {
+  document.getElementById("last-updated").textContent = "Refreshing...";
+  try {
+    await Promise.all([loadHealth(), loadZones(), loadAlerts(), loadReconciliation()]);
+    document.getElementById("last-updated").textContent = "Last updated: " + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("last-updated").textContent = "Error refreshing: " + e.message;
+  }
+}
+
+refreshAll();
+setInterval(refreshAll, 10000); // poll every 10s
+</script>
+</body>
+</html>
