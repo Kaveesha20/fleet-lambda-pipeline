@@ -109,3 +109,6 @@ against expense data as it "arrives")? Rejected because:
   (e.g. ClickHouse) for the utilization time-series if query volume grew.
 - Add a Schema Registry for the Kafka topic instead of an inline schema
   definition in the Spark job.
+
+
+  
